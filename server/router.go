@@ -24,6 +24,7 @@ func NewRouter(proxyController *controller.ProxyController, sourceController *co
 	proxyRouter := router.Group("/proxy")
 	proxyRouter.GET("", proxyController.GetAll)
 	proxyRouter.GET("/:id", proxyController.FindById)
+	proxyRouter.GET("/:id/sessions/count", proxyController.GetProxySessionsCount)
 	proxyRouter.POST("", proxyController.Create)
 	proxyRouter.PUT("/:id/start", proxyController.StartProxy)
 	proxyRouter.PUT("/:id/stop", proxyController.StopProxy)

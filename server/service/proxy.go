@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"github.com/google/uuid"
+	"math"
 	"proxy-engineering-thesis/internal/proxy/sql"
 	"proxy-engineering-thesis/model"
 	"proxy-engineering-thesis/server/repository"
@@ -17,6 +19,7 @@ type ProxyService interface {
 	Update(req *model.ProxyDto) error
 	StartProxy(id string) (string, error)
 	StopProxy(id string) error
+	GetProxySessionsCount(id string) (int, error)
 }
 
 type ProxyServiceImpl struct {
@@ -94,4 +97,13 @@ func (ps *ProxyServiceImpl) StopProxy(id string) error {
 		return err
 	}
 	return nil
+}
+
+func (ps *ProxyServiceImpl) GetProxySessionsCount(id string) (int, error) {
+	proxy, present := ps.proxiesStorage.Proxies[id]
+	if !present {
+		return -math.MinInt8, fmt.Errorf("no proxy found with given id: %s", id)
+	}
+
+	return proxy.NumberOfSessions, nil
 }

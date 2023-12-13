@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"proxy-engineering-thesis/model"
 	"proxy-engineering-thesis/server/service"
+	"strconv"
 )
 
 type ProxyController struct {
@@ -65,6 +66,16 @@ func (pc *ProxyController) StopProxy(ctx *gin.Context) {
 	id := ctx.Param("id")
 	err := pc.proxyService.StopProxy(id)
 	if err != nil {
-		ctx.Data(http.StatusBadRequest, "text/plain; charset=utf-8", []byte("No configuration found"))
+		ctx.Data(http.StatusBadRequest, "text/plain; charset=utf-8", []byte(err.Error()))
 	}
+}
+
+func (pc *ProxyController) GetProxySessionsCount(ctx *gin.Context) {
+	id := ctx.Param("id")
+	count, err := pc.proxyService.GetProxySessionsCount(id)
+	if err != nil {
+		ctx.Data(http.StatusBadRequest, "text/plain; charset=utf-8", []byte(err.Error()))
+	}
+
+	ctx.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(strconv.Itoa(count)))
 }

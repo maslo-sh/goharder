@@ -1,8 +1,6 @@
 package main
 
-import (
-	"proxy-engineering-thesis/server"
-)
+import "proxy-engineering-thesis/server"
 
 func main() {
 	server.StartServer()

@@ -9,24 +9,33 @@ import (
 	"log"
 	"net"
 	"proxy-engineering-thesis/model"
+	"strings"
 	"time"
 )
 
-const MaxBufferSize = 16384
+const (
+	MaxBufferSize = 16400
+	DetectionMode = iota
+	PreventionMode
+)
 
 type ProxyConfiguration struct {
 	Name             string
 	ListeningAddress model.Address
+	Listener         net.Listener
 	Target           model.DataSource
 	Sessions         map[string]*Session
 	NumberOfSessions int
+	Mode             int
 	Done             chan interface{}
 }
 
 type Session struct {
-	Ctx        context.Context
-	ClientConn net.Conn
-	TargetConn net.Conn
+	Ctx                       context.Context
+	ClientConn                net.Conn
+	TargetConn                net.Conn
+	ClosingTriggered          bool
+	ClientActivityInterrupted bool
 }
 
 func NewProxy(dto model.ProxyDto, ds model.DataSource) *ProxyConfiguration {
@@ -36,12 +45,18 @@ func NewProxy(dto model.ProxyDto, ds model.DataSource) *ProxyConfiguration {
 		Target:           ds,
 		Sessions:         make(map[string]*Session),
 		NumberOfSessions: 0,
+		Done:             make(chan interface{}),
 	}
 }
 
 func (p *ProxyConfiguration) newSession(clientConn, targetConn net.Conn) string {
 	sessionId := uuid.New()
-	s := &Session{context.Background(), clientConn, targetConn}
+	s := &Session{
+		context.Background(),
+		clientConn,
+		targetConn,
+		false,
+		false}
 	p.Sessions[sessionId.String()] = s
 	p.NumberOfSessions = p.NumberOfSessions + 1
 	log.Printf("Created session: %s", sessionId)
@@ -68,12 +83,9 @@ func (p *ProxyConfiguration) RemoveSession(sessionId string) {
 	log.Printf("Removed session: %s", sessionId)
 }
 
-func (p *ProxyConfiguration) Stop() {
-	p.Done <- struct{}{}
-}
-
 func (p *ProxyConfiguration) CloseSessions() {
 	for _, v := range p.Sessions {
+		v.ClosingTriggered = true
 		v.Close()
 	}
 }
@@ -85,102 +97,180 @@ func (p *ProxyConfiguration) Start() {
 		log.Printf("Error: %v\n", err)
 		return
 	}
+	p.Listener = listener
 
-	//defer listener.Close()
+	defer listener.Close()
 
 	log.Printf("Proxy listening on %s, forwarding to %s:%s...\n", p.ListeningAddress.CreateHostString(), p.Target.Hostname, p.Target.Port)
 
 	for {
-		select {
-		case <-p.Done:
-			log.Printf("Closed listener for proxy")
-			return
-		default:
-			clientConn, err := listener.Accept()
-			if err != nil {
-				log.Printf("Error accepting connection: %v\n", err)
-				continue
+		clientConn, err := listener.Accept()
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				log.Printf("Closed proxy listener")
+				p.Done <- struct{}{}
+				return
 			}
-
-			log.Printf("Received new connection: %s", clientConn.RemoteAddr().String())
-
-			targetConn, err := net.Dial("tcp", fmt.Sprintf("%s:%s", p.Target.Hostname, p.Target.Port))
-			if err != nil {
-				log.Printf("Target is unreachable: %v\n", err)
-				clientConn.Close()
-				continue
-			}
-
-			log.Printf("Set up connection with database")
-
-			sessionId := p.newSession(clientConn, targetConn)
-			session := p.Sessions[sessionId]
-
-			go p.handleConnection(session)
+			log.Printf("Error accepting connection: %v\n", err)
+			continue
 		}
+
+		log.Printf("Received new connection: %s", clientConn.RemoteAddr().String())
+
+		targetConn, err := net.Dial("tcp", fmt.Sprintf("%s:%s", p.Target.Hostname, p.Target.Port))
+		if err != nil {
+			log.Printf("Target is unreachable: %v\n", err)
+			clientConn.Close()
+			continue
+		}
+
+		log.Printf("Set up connection with database")
+
+		sessionId := p.newSession(clientConn, targetConn)
+		session := p.Sessions[sessionId]
+
+		go p.handleConnection(session)
 	}
 }
 
 func (p *ProxyConfiguration) handleConnection(session *Session) {
+	var packetsProcessed int
 	clientBuffer := make([]byte, MaxBufferSize)
 	targetBuffer := make([]byte, MaxBufferSize)
 
-	go handleSession(session.Ctx, session.ClientConn, session.TargetConn, clientBuffer)
-	go handleSession(session.Ctx, session.TargetConn, session.ClientConn, targetBuffer)
-
 	for {
 		select {
-		case <-session.Ctx.Done():
-			log.Printf("Proxy has been stopped")
-			session.Close()
+		case <-p.Done:
+			return
 		default:
+			packetsProcessed = packetsProcessed + 1
+			session.ClientActivityInterrupted = false
 			// Perform task operation
-			log.Println("Performing task...")
-			time.Sleep(10 * time.Second)
+			session.handleInboundTraffic(clientBuffer, packetsProcessed)
+			if !session.ClientActivityInterrupted {
+				session.handleOutboundTraffic(targetBuffer, packetsProcessed)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
-func handleSession(ctx context.Context, srcConn net.Conn, dstConn net.Conn, buff []byte) {
-	var packetsProcessed int
-	//ctx, cancel := context.WithTimeout(ctx, time.Second*10)
+func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
+	read, err := s.ClientConn.Read(buff)
+	if err != nil {
+		if strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Connection closed")
+			s.ClosingTriggered = true
+			return
+		}
+		if err != io.EOF {
+			log.Printf("Error reading data from source: %v\n", err)
+		}
+		return
+	}
 
-	for {
-		read, err := srcConn.Read(buff)
+	next := true
+	maliciousDetected := false
+	offset := 0
+	for next {
+		header := CreateHeaderFromBytes(buff[offset : offset+5])
+		if header.PacketType == 0x51 || header.PacketType == 0x50 {
+			query := string(buff[offset+5 : offset+header.PacketLength])
+			log.Printf("PACKET WITH DQL: %s", query)
+			if strings.Contains(query, "OR'1=1';") {
+				maliciousDetected = true
+			}
+		}
+		log.Printf("Packet type: %s; packet length: %d", GetPacketType(header.PacketType), header.PacketLength)
+		offset = offset + header.PacketLength + 1
+		next = !(offset >= read)
+	}
+
+	var buffToWrite []byte
+	if maliciousDetected {
+		buffToWrite = GetMaliciousActivityDetectedError()
+		_, err := s.ClientConn.Write(buffToWrite)
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Error reading data from source: %v\n", err)
+				log.Printf("Error writing data to proxy message buffer: %v\n", err)
 			}
-			break
 		}
+		s.ClientActivityInterrupted = true
+		return
+	} else {
+		buffToWrite = buff[:read]
+	}
 
-		packetsProcessed = packetsProcessed + 1
+	written, err := s.TargetConn.Write(buffToWrite)
 
-		written, err := dstConn.Write(buff[:read])
-
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("Error writing data from target to destination: %v\n", err)
-			}
-			break
+	if err != nil {
+		if strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Connection closed")
+			s.ClosingTriggered = true
+			return
 		}
-
-		if packetsProcessed == 1 {
-			log.Printf("It's a startup message")
-			messageLength := binary.BigEndian.Uint32(buff[:4])
-			log.Printf("STARTUP MESSAGE LENGTH: %d", messageLength)
-			continue
+		if err != io.EOF {
+			log.Printf("Error writing data from target to destination: %v\n", err)
 		}
+		return
+	}
 
-		next := true
-		offset := 0
-		for next {
-			header := CreateHeaderFromBytes(buff[offset : offset+5])
-			log.Printf("Packet type: %s; packet length: %d", GetPacketType(header.PacketType), header.PacketLength)
-			offset = offset + header.PacketLength + 1
-			next = !(offset >= read)
+	if packetsProcessed == 1 {
+		log.Printf("It's a startup message")
+		messageLength := binary.BigEndian.Uint32(buff[:4])
+		log.Printf("STARTUP MESSAGE LENGTH: %d", messageLength)
+		return
+	}
+
+	log.Printf("Copied %d bytes from listener to target\n", written)
+}
+
+func (s *Session) handleOutboundTraffic(buff []byte, packetsProcessed int) {
+	//when sending message from proxy itself, program will lock on that reading command
+	read, err := s.TargetConn.Read(buff)
+	if err != nil {
+		if strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Connection closed")
+			return
 		}
+		if err != io.EOF {
+			log.Printf("Error reading data from source: %v\n", err)
+		}
+		return
+	}
 
-		log.Printf("Copied %d bytes from listener to target\n", written)
+	written, err := s.ClientConn.Write(buff[:read])
+
+	if err != nil {
+		if strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Connection closed")
+			return
+		}
+		if err != io.EOF {
+			log.Printf("Error writing data from target to destination: %v\n", err)
+		}
+		return
+	}
+
+	if packetsProcessed == 1 {
+		log.Printf("It's a startup message")
+		messageLength := binary.BigEndian.Uint32(buff[:4])
+		log.Printf("STARTUP MESSAGE LENGTH: %d", messageLength)
+		return
+	}
+
+	readPacketBytes(buff, read)
+
+	log.Printf("Copied %d bytes from listener to target\n", written)
+}
+
+func readPacketBytes(buff []byte, readBytes int) {
+	next := true
+	offset := 0
+	for next {
+		header := CreateHeaderFromBytes(buff[offset : offset+5])
+		log.Printf("Packet type: %s; packet length: %d", GetPacketType(header.PacketType), header.PacketLength)
+		offset = offset + header.PacketLength + 1
+		next = !(offset >= readBytes)
 	}
 }
