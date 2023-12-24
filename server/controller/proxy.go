@@ -54,7 +54,8 @@ func (pc *ProxyController) FindById(ctx *gin.Context) {
 
 func (pc *ProxyController) StartProxy(ctx *gin.Context) {
 	id := ctx.Param("id")
-	proxyId, err := pc.proxyService.StartProxy(id)
+	mode := ctx.Query("mode")
+	proxyId, err := pc.proxyService.StartProxy(id, mode)
 	if err != nil {
 		ctx.Data(http.StatusBadRequest, "text/plain; charset=utf-8", []byte("No configuration found"))
 	}

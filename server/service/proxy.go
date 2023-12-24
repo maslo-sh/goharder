@@ -17,7 +17,7 @@ type ProxyService interface {
 	Create(req *model.ProxyDto)
 	Delete(id string) error
 	Update(req *model.ProxyDto) error
-	StartProxy(id string) (string, error)
+	StartProxy(id, proxyMode string) (string, error)
 	StopProxy(id string) error
 	GetProxySessionsCount(id string) (int, error)
 }
@@ -70,7 +70,7 @@ func (ps *ProxyServiceImpl) Update(dto *model.ProxyDto) error {
 	return nil
 }
 
-func (ps *ProxyServiceImpl) StartProxy(id string) (string, error) {
+func (ps *ProxyServiceImpl) StartProxy(id, proxyMode string) (string, error) {
 	proxyDto, err := ps.proxyRepository.Get(id)
 	if err != nil {
 		return "", err
@@ -84,7 +84,7 @@ func (ps *ProxyServiceImpl) StartProxy(id string) (string, error) {
 		return "", err
 	}
 
-	proxyConfig := sql.NewProxy(*proxyDto, *ds)
+	proxyConfig := sql.NewProxy(*proxyDto, *ds, proxyMode)
 	processId := uuid.New()
 	ps.proxiesStorage.AddProxyToStorage(proxyConfig, processId.String())
 	go proxyConfig.Start()

@@ -2,14 +2,14 @@ package sql
 
 import "encoding/binary"
 
-type Header struct {
+type PGHeader struct {
 	PacketType   int
 	PacketLength int
 }
 
-func CreateHeaderFromBytes(bytes []byte) Header {
+func CreateHeaderFromBytes(bytes []byte) PGHeader {
 	packetLength := int(binary.BigEndian.Uint32(bytes[1:5]))
-	return Header{
+	return PGHeader{
 		PacketType:   int(bytes[0]),
 		PacketLength: packetLength,
 	}

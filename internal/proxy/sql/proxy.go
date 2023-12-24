@@ -4,19 +4,24 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/google/uuid"
 	"io"
 	"log"
 	"net"
+	"proxy-engineering-thesis"
+	"proxy-engineering-thesis/internal/aws"
+	"proxy-engineering-thesis/internal/detection"
 	"proxy-engineering-thesis/model"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
 	MaxBufferSize = 16400
 	DetectionMode = iota
 	PreventionMode
+	FullProtectionMode
 )
 
 type ProxyConfiguration struct {
@@ -34,44 +39,65 @@ type Session struct {
 	Ctx                       context.Context
 	ClientConn                net.Conn
 	TargetConn                net.Conn
+	detector                  detection.Detector
 	ClosingTriggered          bool
 	ClientActivityInterrupted bool
+	mode                      int
+	cwClient                  *aws.CloudWatchConfiguration
 }
 
-func NewProxy(dto model.ProxyDto, ds model.DataSource) *ProxyConfiguration {
+func NewProxy(dto model.ProxyDto, ds model.DataSource, proxyMode string) *ProxyConfiguration {
 	return &ProxyConfiguration{
 		Name:             dto.Name,
 		ListeningAddress: dto.Address,
 		Target:           ds,
 		Sessions:         make(map[string]*Session),
 		NumberOfSessions: 0,
+		Mode:             GetProxyMode(proxyMode),
 		Done:             make(chan interface{}),
 	}
 }
 
 func (p *ProxyConfiguration) newSession(clientConn, targetConn net.Conn) string {
+	var cwClient *aws.CloudWatchConfiguration
+	conf, err := prototype.ReadPropertiesBasedConfig("resources/cw.properties")
+	if err != nil {
+		fmt.Printf("failed to retrieve CloudWatch config from file: %v\n", err)
+	}
+
+	if conf["logGroupName"] == "" || conf["logStreamName"] == "" {
+		fmt.Printf("didn't found necessary CloudWatch configuration in resources")
+		cwClient = nil
+	} else {
+		cwClient = aws.NewCloudWatchConfiguration(conf["logGroupName"], conf["logStreamName"])
+	}
 	sessionId := uuid.New()
 	s := &Session{
 		context.Background(),
 		clientConn,
 		targetConn,
+		detection.SqlDetector{},
 		false,
-		false}
+		false,
+		p.Mode,
+		cwClient,
+	}
+	s.cwClient.InitLogStore()
 	p.Sessions[sessionId.String()] = s
 	p.NumberOfSessions = p.NumberOfSessions + 1
-	log.Printf("Created session: %s", sessionId)
+	log.Printf("created session: %s", sessionId)
 	return sessionId.String()
 }
 
 func (s *Session) Close() error {
 	err := s.ClientConn.Close()
 	if err != nil {
-		log.Printf("Failed to close client connection: %v\n", err)
+		log.Printf("failed to close client connection: %v\n", err)
 		return err
 	}
 	err = s.TargetConn.Close()
 	if err != nil {
-		log.Printf("Failed to close target connection: %v\n", err)
+		log.Printf("failed to close target connection: %v\n", err)
 		return err
 	}
 	return nil
@@ -80,7 +106,7 @@ func (s *Session) Close() error {
 func (p *ProxyConfiguration) RemoveSession(sessionId string) {
 	delete(p.Sessions, sessionId)
 	p.NumberOfSessions = p.NumberOfSessions - 1
-	log.Printf("Removed session: %s", sessionId)
+	log.Printf("removed session: %s", sessionId)
 }
 
 func (p *ProxyConfiguration) CloseSessions() {
@@ -91,40 +117,40 @@ func (p *ProxyConfiguration) CloseSessions() {
 }
 
 func (p *ProxyConfiguration) Start() {
-	log.Printf("Started new '%s' proxy instance", p.Name)
+	log.Printf("started new '%s' proxy instance", p.Name)
 	listener, err := net.Listen("tcp", p.ListeningAddress.CreateHostString())
 	if err != nil {
-		log.Printf("Error: %v\n", err)
+		log.Printf("error when setting up listener: %v\n", err)
 		return
 	}
 	p.Listener = listener
 
 	defer listener.Close()
 
-	log.Printf("Proxy listening on %s, forwarding to %s:%s...\n", p.ListeningAddress.CreateHostString(), p.Target.Hostname, p.Target.Port)
+	log.Printf("proxy listening on %s, forwarding to %s:%s...\n", p.ListeningAddress.CreateHostString(), p.Target.Hostname, p.Target.Port)
 
 	for {
 		clientConn, err := listener.Accept()
 		if err != nil {
 			if strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Closed proxy listener")
+				log.Printf("closed proxy listener")
 				p.Done <- struct{}{}
 				return
 			}
-			log.Printf("Error accepting connection: %v\n", err)
+			log.Printf("error accepting connection: %v\n", err)
 			continue
 		}
 
-		log.Printf("Received new connection: %s", clientConn.RemoteAddr().String())
+		log.Printf("received new connection: %s", clientConn.RemoteAddr().String())
 
 		targetConn, err := net.Dial("tcp", fmt.Sprintf("%s:%s", p.Target.Hostname, p.Target.Port))
 		if err != nil {
-			log.Printf("Target is unreachable: %v\n", err)
+			log.Printf("target is unreachable: %v\n", err)
 			clientConn.Close()
 			continue
 		}
 
-		log.Printf("Set up connection with database")
+		log.Printf("set up connection with database")
 
 		sessionId := p.newSession(clientConn, targetConn)
 		session := p.Sessions[sessionId]
@@ -139,6 +165,10 @@ func (p *ProxyConfiguration) handleConnection(session *Session) {
 	targetBuffer := make([]byte, MaxBufferSize)
 
 	for {
+		if session.ClosingTriggered {
+			p.Done <- struct{}{}
+		}
+
 		select {
 		case <-p.Done:
 			return
@@ -175,9 +205,8 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 	for next {
 		header := CreateHeaderFromBytes(buff[offset : offset+5])
 		if header.PacketType == 0x51 || header.PacketType == 0x50 {
-			query := string(buff[offset+5 : offset+header.PacketLength])
-			log.Printf("PACKET WITH DQL: %s", query)
-			if strings.Contains(query, "OR'1=1';") {
+			status := s.detector.DetectMaliciousContent(buff[offset+5 : offset+header.PacketLength])
+			if status == detection.MALICIOUS {
 				maliciousDetected = true
 			}
 		}
@@ -188,19 +217,24 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 
 	var buffToWrite []byte
 	if maliciousDetected {
-		buffToWrite = GetMaliciousActivityDetectedError()
-		_, err := s.ClientConn.Write(buffToWrite)
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("Error writing data to proxy message buffer: %v\n", err)
+		if s.mode == PreventionMode || s.mode == FullProtectionMode {
+			buffToWrite = GetMaliciousActivityDetectedError()
+			_, err := s.ClientConn.Write(buffToWrite)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("Error writing data to proxy message buffer: %v\n", err)
+				}
 			}
+			s.ClientActivityInterrupted = true
+			return
 		}
-		s.ClientActivityInterrupted = true
-		return
-	} else {
-		buffToWrite = buff[:read]
+
+		if s.mode == DetectionMode || s.mode == FullProtectionMode {
+			s.cwClient.SendLog("Malicious query was detected")
+		}
 	}
 
+	buffToWrite = buff[:read]
 	written, err := s.TargetConn.Write(buffToWrite)
 
 	if err != nil {
@@ -273,4 +307,17 @@ func readPacketBytes(buff []byte, readBytes int) {
 		offset = offset + header.PacketLength + 1
 		next = !(offset >= readBytes)
 	}
+}
+
+func GetProxyMode(mode string) int {
+	lowerCasedMode := strings.ToLower(mode)
+	if lowerCasedMode == "prevention" {
+		return PreventionMode
+	}
+	if lowerCasedMode == "detection" {
+		return DetectionMode
+	}
+
+	return FullProtectionMode
+
 }
