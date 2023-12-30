@@ -31,12 +31,20 @@ func (pc *DataSourceController) Delete(ctx *gin.Context) {
 	if err != nil {
 		ctx.JSON(400, nil)
 	}
-	pc.dataSourceService.Delete(name)
+	err = pc.dataSourceService.Delete(name)
+	if err != nil {
+		ctx.JSON(400, nil)
+	}
 	ctx.JSON(200, nil)
 }
 
 func (pc *DataSourceController) GetAll(ctx *gin.Context) {
-	//var proxies []dto.ProxyDto
+	dataSources, err := pc.dataSourceService.GetAll()
+	if err != nil {
+		ctx.JSON(400, nil)
+	}
+
+	ctx.JSON(200, dataSources)
 }
 
 func (pc *DataSourceController) FindById(ctx *gin.Context) {

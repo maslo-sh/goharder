@@ -3,21 +3,20 @@ package server
 import (
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"proxy-engineering-thesis/server/controller"
 )
 
-func NewRouter(proxyController *controller.ProxyController, sourceController *controller.DataSourceController) *gin.Engine {
+const WebAppUrl = "http://localhost:3000"
+
+func NewRouter(
+	proxyController *controller.ProxyController,
+	sourceController *controller.DataSourceController,
+	auditController *controller.AuditController) *gin.Engine {
 	service := gin.Default()
 
-	service.GET("", func(context *gin.Context) {
-		context.JSON(http.StatusOK, "welcome home")
-	})
-
-	service.NoRoute(func(c *gin.Context) {
-		c.JSON(404, gin.H{"code": "PAGE_NOT_FOUND", "message": "Page not found"})
-	})
-
-	service.Group("/").StaticFile("/favicon.ico", "./resources/favicon.ico")
+	service.NoRoute(WebAppReverseProxy)
 
 	router := service.Group("/api")
 
@@ -36,5 +35,22 @@ func NewRouter(proxyController *controller.ProxyController, sourceController *co
 	dataSourceRouter.GET("/:id", sourceController.FindById)
 	dataSourceRouter.DELETE("/:id", sourceController.Delete)
 
+	auditRouter := router.Group("/audit")
+	auditRouter.POST("/:id", auditController.PerformAudit)
+
 	return service
+}
+
+func WebAppReverseProxy(c *gin.Context) {
+	remote, _ := url.Parse(WebAppUrl)
+	proxy := httputil.NewSingleHostReverseProxy(remote)
+	proxy.Director = func(req *http.Request) {
+		req.Header = c.Request.Header
+		req.Host = remote.Host
+		req.URL = c.Request.URL
+		req.URL.Scheme = remote.Scheme
+		req.URL.Host = remote.Host
+	}
+
+	proxy.ServeHTTP(c.Writer, c.Request)
 }

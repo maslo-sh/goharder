@@ -7,9 +7,9 @@ import (
 	"io"
 	"log"
 	"net"
-	"proxy-engineering-thesis"
+	utils "proxy-engineering-thesis"
 	"proxy-engineering-thesis/internal/aws"
-	"proxy-engineering-thesis/internal/detection"
+	"proxy-engineering-thesis/internal/proxy/detection"
 	"proxy-engineering-thesis/model"
 	"strings"
 	"time"
@@ -60,7 +60,7 @@ func NewProxy(dto model.ProxyDto, ds model.DataSource, proxyMode string) *ProxyC
 
 func (p *ProxyConfiguration) newSession(clientConn, targetConn net.Conn) string {
 	var cwClient *aws.CloudWatchConfiguration
-	conf, err := prototype.ReadPropertiesBasedConfig("resources/cw.properties")
+	conf, err := utils.ReadPropertiesBasedConfig("resources/cw.properties")
 	if err != nil {
 		fmt.Printf("failed to retrieve CloudWatch config from file: %v\n", err)
 	}
@@ -217,6 +217,11 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 
 	var buffToWrite []byte
 	if maliciousDetected {
+		if s.mode == DetectionMode || s.mode == FullProtectionMode {
+			message := fmt.Sprintf("Malicious query; IP - %s", s.ClientConn.RemoteAddr())
+			go s.cwClient.SendLog(message)
+		}
+
 		if s.mode == PreventionMode || s.mode == FullProtectionMode {
 			buffToWrite = GetMaliciousActivityDetectedError()
 			_, err := s.ClientConn.Write(buffToWrite)
@@ -227,10 +232,6 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 			}
 			s.ClientActivityInterrupted = true
 			return
-		}
-
-		if s.mode == DetectionMode || s.mode == FullProtectionMode {
-			s.cwClient.SendLog("Malicious query was detected")
 		}
 	}
 

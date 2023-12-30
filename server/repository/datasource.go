@@ -48,5 +48,11 @@ func (pr *DataSourceRepositoryImpl) Get(id string) (*model.DataSource, error) {
 }
 
 func (pr *DataSourceRepositoryImpl) GetAll() ([]model.DataSource, error) {
-	return nil, nil
+	var datasources []model.DataSource
+	tx := pr.Db.Find(&datasources)
+	if err := tx.Error; err != nil {
+		return nil, tx.Error
+	}
+
+	return datasources, nil
 }

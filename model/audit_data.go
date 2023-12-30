@@ -1,8 +1,9 @@
-package sql
+package model
 
 type AuditData struct {
-	NumberOfSuperusers      int
+	Superusers              []string
 	IsAuditExtensionEnabled bool
 	IsAuditLoggingEnabled   bool
+	AuthenticationMethod    string
 	DatabaseHosts           []string
 }

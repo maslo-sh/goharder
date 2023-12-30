@@ -18,7 +18,6 @@ const (
 
 type CloudWatchConfiguration struct {
 	Client        *cloudwatchlogs.Client
-	cfg           aws.Config
 	LogGroupName  string
 	LogStreamName string
 }
@@ -30,11 +29,10 @@ func NewCloudWatchConfiguration(groupName, streamName string) *CloudWatchConfigu
 		log.Printf("failed to load configuration, %v", err)
 	}
 
-	fmt.Println("CloudWatch logging configuration completed successfully!")
+	log.Printf("CloudWatch logging configuration completed successfully")
 
 	return &CloudWatchConfiguration{
 		cloudwatchlogs.NewFromConfig(cfg),
-		cfg,
 		groupName,
 		streamName}
 }
@@ -53,10 +51,9 @@ func (c *CloudWatchConfiguration) InitLogStore() {
 
 func (c *CloudWatchConfiguration) CreateLogGroup() error {
 	// Create or update the log group
-	res, err := c.Client.CreateLogGroup(context.TODO(), &cloudwatchlogs.CreateLogGroupInput{
+	_, err := c.Client.CreateLogGroup(context.TODO(), &cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: aws.String(c.LogGroupName),
 	})
-	fmt.Printf("%s\n", res)
 	if err != nil {
 		return err
 	}
@@ -86,7 +83,6 @@ func (c *CloudWatchConfiguration) SendLog(message string) error {
 				Message:   aws.String(message),
 				Timestamp: aws.Int64(nowMillis()),
 			},
-			// Add more log events as needed
 		},
 	})
 	if err != nil {

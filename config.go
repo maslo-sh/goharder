@@ -1,4 +1,4 @@
-package prototype
+package utils
 
 import (
 	"bufio"

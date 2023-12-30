@@ -20,8 +20,8 @@ func StartServer() {
 		dbCtx.SetUpSchema()
 	}
 
-	routeDeclaration := func(proxyController *controller.ProxyController, dsController *controller.DataSourceController) {
-		routes := NewRouter(proxyController, dsController)
+	routeDeclaration := func(proxyController *controller.ProxyController, dsController *controller.DataSourceController, auditController *controller.AuditController) {
+		routes := NewRouter(proxyController, dsController, auditController)
 
 		server := &http.Server{
 			Addr:           ":8888",
@@ -63,10 +63,16 @@ func declareDependencies(container *dig.Container) {
 	container.Provide(func(dsService service.DataSourceService) *controller.DataSourceController {
 		return controller.NewDataSourceController(dsService)
 	})
+	container.Provide(func(dsService service.DataSourceService) service.AuditService {
+		return service.NewAuditService(dsService)
+	})
 	container.Provide(func(proxyService service.ProxyService) *controller.ProxyController {
 		return controller.NewProxyController(proxyService)
 	})
-	container.Provide(func(proxyController *controller.ProxyController, dsController *controller.DataSourceController) *gin.Engine {
-		return NewRouter(proxyController, dsController)
+	container.Provide(func(auditService service.AuditService) *controller.AuditController {
+		return controller.NewAuditController(auditService)
+	})
+	container.Provide(func(proxyController *controller.ProxyController, dsController *controller.DataSourceController, auditController *controller.AuditController) *gin.Engine {
+		return NewRouter(proxyController, dsController, auditController)
 	})
 }

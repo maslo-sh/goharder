@@ -31,6 +31,7 @@ func (d SqlDetector) GetMaliciousQueries() []string {
 		"null--",
 		"chr(",
 		"ascii(",
+		"' OR '1'='1",
 	}
 }
 

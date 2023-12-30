@@ -3,9 +3,12 @@ module proxy-engineering-thesis
 go 1.18
 
 require (
+	github.com/gin-gonic/contrib v0.0.0-20221130124618-7e01895a63f2
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.3.1
 )
+
+require github.com/lib/pq v1.10.9
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.24.0
