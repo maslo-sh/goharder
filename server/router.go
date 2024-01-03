@@ -8,7 +8,7 @@ import (
 	"proxy-engineering-thesis/server/controller"
 )
 
-const WebAppUrl = "http://localhost:3000"
+const WebAppUrl = "http://frontend-domain:3000"
 
 func NewRouter(
 	proxyController *controller.ProxyController,

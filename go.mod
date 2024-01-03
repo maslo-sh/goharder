@@ -10,6 +10,8 @@ require (
 
 require github.com/lib/pq v1.10.9
 
+require github.com/bluele/gcache v0.0.2 // indirect
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.24.0
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.5.4 // indirect

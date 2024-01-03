@@ -1,4 +1,4 @@
-package sql
+package relational
 
 const (
 	SuperusersQuery      = "SELECT usename FROM pg_user WHERE usesuper = true;"

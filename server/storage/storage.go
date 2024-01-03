@@ -2,20 +2,20 @@ package storage
 
 import (
 	"fmt"
-	"proxy-engineering-thesis/internal/proxy/sql"
+	"proxy-engineering-thesis/internal/proxy/relational"
 )
 
 type ProxiesStorage struct {
-	Proxies map[string]*sql.ProxyConfiguration
+	Proxies map[string]*relational.ProxyConfiguration
 }
 
 func NewProxiesStorage() *ProxiesStorage {
 	return &ProxiesStorage{
-		make(map[string]*sql.ProxyConfiguration),
+		make(map[string]*relational.ProxyConfiguration),
 	}
 }
 
-func (p *ProxiesStorage) AddProxyToStorage(proxy *sql.ProxyConfiguration, id string) string {
+func (p *ProxiesStorage) AddProxyToStorage(proxy *relational.ProxyConfiguration, id string) string {
 	p.Proxies[id] = proxy
 	return id
 }

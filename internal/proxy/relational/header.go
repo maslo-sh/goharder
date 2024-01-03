@@ -1,4 +1,4 @@
-package sql
+package relational
 
 import "encoding/binary"
 

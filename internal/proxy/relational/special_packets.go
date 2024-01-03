@@ -1,4 +1,4 @@
-package sql
+package relational
 
 // messgae:
 func GetMaliciousActivityDetectedError() []byte {

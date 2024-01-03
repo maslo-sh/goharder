@@ -1,4 +1,4 @@
-package sql
+package relational
 
 var packetTypes = map[int]string{
 	0x52: "AUTHENTICATION_REQUEST",

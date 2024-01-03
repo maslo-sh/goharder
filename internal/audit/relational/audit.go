@@ -1,13 +1,13 @@
-package sql
+package relational
 
 import (
 	"database/sql"
 	"log"
-	"proxy-engineering-thesis/model"
+	"proxy-engineering-thesis/model/relational"
 )
 
-func PerformAudit(ds DataSourceConnectionData, config model.AuditConfiguration) (model.AuditData, error) {
-	var auditResult = model.AuditData{}
+func PerformAudit(ds DataSourceConnectionData, config relational.AuditConfiguration) (relational.AuditData, error) {
+	var auditResult = relational.AuditData{}
 
 	conn, err := GetDBConnection(ds)
 	if err != nil {
@@ -47,6 +47,14 @@ func PerformAudit(ds DataSourceConnectionData, config model.AuditConfiguration) 
 		}
 
 		auditResult.AuthenticationMethod = authMethod
+	}
+
+	if config.CheckRemoteAccess {
+		remoteAccessAddresses, err := getDatabaseListeningAddresses(conn)
+		if err != nil {
+			log.Printf("failed to retrieve remote access addresses: %v\n", err)
+		}
+		auditResult.DatabaseHosts = remoteAccessAddresses
 	}
 
 	return auditResult, nil
@@ -125,4 +133,24 @@ func getAuthenticationMethod(db *sql.DB) (string, error) {
 	}
 
 	return "", nil
+}
+
+func getDatabaseListeningAddresses(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(ListenAddressesQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var addresses []string
+
+	for rows.Next() {
+		var address string
+		if err := rows.Scan(&address); err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, address)
+	}
+
+	return addresses, nil
 }

@@ -1,4 +1,4 @@
-package model
+package relational
 
 type AuditConfiguration struct {
 	CheckAuditLogs            bool

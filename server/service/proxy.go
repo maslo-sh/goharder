@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"math"
-	"proxy-engineering-thesis/internal/proxy/sql"
+	"proxy-engineering-thesis/internal/proxy/relational"
 	"proxy-engineering-thesis/model"
 	"proxy-engineering-thesis/server/repository"
 	"proxy-engineering-thesis/server/storage"
@@ -84,7 +84,7 @@ func (ps *ProxyServiceImpl) StartProxy(id, proxyMode string) (string, error) {
 		return "", err
 	}
 
-	proxyConfig := sql.NewProxy(*proxyDto, *ds, proxyMode)
+	proxyConfig := relational.NewProxy(*proxyDto, *ds, proxyMode)
 	processId := uuid.New()
 	ps.proxiesStorage.AddProxyToStorage(proxyConfig, processId.String())
 	go proxyConfig.Start()

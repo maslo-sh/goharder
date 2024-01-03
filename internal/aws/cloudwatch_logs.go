@@ -74,7 +74,7 @@ func (c *CloudWatchConfiguration) CreateLogStream() error {
 	return nil
 }
 
-func (c *CloudWatchConfiguration) SendLog(message string) error {
+func (c *CloudWatchConfiguration) SendLog(message string) {
 	_, err := c.Client.PutLogEvents(context.TODO(), &cloudwatchlogs.PutLogEventsInput{
 		LogGroupName:  aws.String(c.LogGroupName),
 		LogStreamName: aws.String(c.LogStreamName),
@@ -86,10 +86,8 @@ func (c *CloudWatchConfiguration) SendLog(message string) error {
 		},
 	})
 	if err != nil {
-		return err
+		log.Printf("failed to send log to CloudWatch: %v\n", err)
 	}
-
-	return nil
 }
 
 func nowMillis() int64 {

@@ -1,4 +1,4 @@
-package model
+package relational
 
 type AuditData struct {
 	Superusers              []string

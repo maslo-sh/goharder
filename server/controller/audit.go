@@ -3,7 +3,7 @@ package controller
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"proxy-engineering-thesis/model"
+	"proxy-engineering-thesis/model/relational"
 	"proxy-engineering-thesis/server/service"
 )
 
@@ -16,7 +16,7 @@ func NewAuditController(auditService service.AuditService) *AuditController {
 }
 
 func (ac *AuditController) PerformAudit(ctx *gin.Context) {
-	var config model.AuditConfiguration
+	var config relational.AuditConfiguration
 	id := ctx.Param("id")
 	err := ctx.ShouldBindJSON(&config)
 	if err != nil {
