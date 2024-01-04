@@ -1,16 +1,14 @@
 package relational
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/bluele/gcache"
 	"io"
 	"log"
-	"math"
 	"net"
 	utils "proxy-engineering-thesis"
 	"proxy-engineering-thesis/internal/aws"
+	"proxy-engineering-thesis/internal/proxy/blacklist"
 	"proxy-engineering-thesis/internal/proxy/detection"
 	"proxy-engineering-thesis/model"
 	"strings"
@@ -38,13 +36,12 @@ type ProxyConfiguration struct {
 }
 
 type Session struct {
-	Ctx                       context.Context
-	ClientConn                net.Conn
-	TargetConn                net.Conn
+	clientConn                net.Conn
+	targetConn                net.Conn
 	detector                  detection.Detector
-	BlackListCache            gcache.Cache
+	blackListManager          *blacklist.BlackListManager
 	ClosingTriggered          bool
-	ClientActivityInterrupted bool
+	clientActivityInterrupted bool
 	mode                      int
 	cwClient                  *aws.CloudWatchConfiguration
 }
@@ -76,19 +73,10 @@ func (p *ProxyConfiguration) newSession(clientConn, targetConn net.Conn) string 
 	}
 	sessionId := uuid.New()
 	s := &Session{
-		context.Background(),
 		clientConn,
 		targetConn,
 		detection.SqlDetector{},
-		gcache.New(100).LFU().LoaderFunc(func(key interface{}) (interface{}, error) {
-			return 0, nil
-		}).EvictedFunc(func(key, val interface{}) {
-			strKey, ok := key.(string)
-			if ok {
-				log.Printf("evicted entry from cache - %s can connect again without delay", strKey)
-			}
-
-		}).Build(),
+		blacklist.NewBlackListManager(time.Millisecond * 200),
 		false,
 		false,
 		p.Mode,
@@ -103,17 +91,17 @@ func (p *ProxyConfiguration) newSession(clientConn, targetConn net.Conn) string 
 
 func (s *Session) Close() error {
 
-	err := s.ClientConn.Close()
+	err := s.clientConn.Close()
 	if err != nil {
 		log.Printf("failed to close client connection: %v\n", err)
 		return err
 	}
-	err = s.TargetConn.Close()
+	err = s.targetConn.Close()
 	if err != nil {
 		log.Printf("failed to close target connection: %v\n", err)
 		return err
 	}
-	s.BlackListCache.Purge()
+	s.blackListManager.PurgeCache()
 	return nil
 }
 
@@ -183,42 +171,19 @@ func (p *ProxyConfiguration) handleConnection(session *Session) {
 		default:
 
 			packetsProcessed = packetsProcessed + 1
-			session.ClientActivityInterrupted = false
-
-			// Handle potential blacklisting
-			source := session.ClientConn.RemoteAddr().String()
-			cacheValue, _ := session.BlackListCache.Get(source)
-			exp, ok := cacheValue.(int)
-			if !ok {
-				log.Printf("failed to convert cache value under '%s' key - value is not an integer", source)
-			} else {
-				timeOfSleeping := math.Pow(2, float64(exp))
-				time.Sleep(time.Duration(timeOfSleeping) * time.Second)
-			}
+			session.clientActivityInterrupted = false
 
 			// Perform task operation
 			session.handleInboundTraffic(clientBuffer, packetsProcessed)
-			if !session.ClientActivityInterrupted {
+			if !session.clientActivityInterrupted {
 				session.handleOutboundTraffic(targetBuffer, packetsProcessed)
 			}
 		}
 	}
 }
 
-func (s *Session) UpdateBlackList(key string, value interface{}) {
-	intValue, ok := value.(int)
-	if !ok {
-		log.Printf("failed to load cache value under '%s' key - value is not an integer", key)
-		return
-	}
-	exp := math.Min(float64(intValue)+1, 6)
-	newBlockTime := time.Second * time.Duration(math.Pow(2, exp+1))
-	s.BlackListCache.SetWithExpire(key, exp, newBlockTime)
-	log.Printf("next request from source %s will be blocked for %d seconds", key, newBlockTime/1e9)
-}
-
 func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
-	read, err := s.ClientConn.Read(buff)
+	read, err := s.clientConn.Read(buff)
 	if err != nil {
 		if strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Connection closed")
@@ -229,6 +194,17 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 			log.Printf("Error reading data from source: %v\n", err)
 		}
 		return
+	}
+
+	source := s.clientConn.RemoteAddr().String()
+
+	defer func() {
+		s.blackListManager.UpdateLastAccess(source)
+	}()
+
+	// Handle potential blacklisting
+	if s.blackListManager.ShouldRequestBeBlocked(source) && packetsProcessed > 10 {
+		s.blackListManager.BlockProcessingTraffic(source)
 	}
 
 	next := true
@@ -249,34 +225,29 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 
 	var buffToWrite []byte
 	if maliciousDetected {
-		source := s.ClientConn.RemoteAddr().String()
-		numberOfAttempts, err := s.BlackListCache.Get(source)
-		if err != nil {
-			log.Printf("failed to retrieve value under key %s from cache: %v\n", source, err)
-		} else {
-			s.UpdateBlackList(source, numberOfAttempts)
-		}
+		source := s.clientConn.RemoteAddr().String()
+		s.blackListManager.UpdateCache(source)
 
 		if s.mode == DetectionMode || s.mode == FullProtectionMode {
-			message := fmt.Sprintf("Malicious query; IP - %s", s.ClientConn.RemoteAddr())
+			message := fmt.Sprintf("Malicious query; IP - %s", s.clientConn.RemoteAddr())
 			go s.cwClient.SendLog(message)
 		}
 
 		if s.mode == PreventionMode || s.mode == FullProtectionMode {
 			buffToWrite = GetMaliciousActivityDetectedError()
-			_, err := s.ClientConn.Write(buffToWrite)
+			_, err := s.clientConn.Write(buffToWrite)
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("Error writing data to proxy message buffer: %v\n", err)
 				}
 			}
-			s.ClientActivityInterrupted = true
+			s.clientActivityInterrupted = true
 			return
 		}
 	}
 
 	buffToWrite = buff[:read]
-	written, err := s.TargetConn.Write(buffToWrite)
+	written, err := s.targetConn.Write(buffToWrite)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "use of closed network connection") {
@@ -302,7 +273,7 @@ func (s *Session) handleInboundTraffic(buff []byte, packetsProcessed int) {
 
 func (s *Session) handleOutboundTraffic(buff []byte, packetsProcessed int) {
 	//when sending message from proxy itself, program will lock on that reading command
-	read, err := s.TargetConn.Read(buff)
+	read, err := s.targetConn.Read(buff)
 	if err != nil {
 		if strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Connection closed")
@@ -314,7 +285,7 @@ func (s *Session) handleOutboundTraffic(buff []byte, packetsProcessed int) {
 		return
 	}
 
-	written, err := s.ClientConn.Write(buff[:read])
+	written, err := s.clientConn.Write(buff[:read])
 
 	if err != nil {
 		if strings.Contains(err.Error(), "use of closed network connection") {

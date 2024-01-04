@@ -37,44 +37,54 @@ func (blm *BlackListManager) UpdateLastAccess(key string) {
 	blm.LastAccess[key] = time.Now()
 }
 
-func (blm *BlackListManager) UpdateCache(key string, value interface{}) {
-	intValue, ok := value.(int)
-	if !ok {
-		log.Printf("failed to load cache value under '%s' key - value is not an integer", key)
-		return
-	}
-	exp := math.Min(float64(intValue)+1, 6)
-	newBlockTime := time.Second * time.Duration(math.Pow(2, exp+1))
-	blm.Cache.SetWithExpire(key, exp, newBlockTime)
-	log.Printf("next request from source %s will be blocked for %d seconds", key, newBlockTime/1e9)
+func (blm *BlackListManager) UpdateCache(key string) {
+	cacheValue, _ := blm.Cache.Get(key)
+	floatValue := convertCacheValueToFloat64(cacheValue)
+	exp := math.Min(floatValue+1, 6)
+	newExpirationTime := time.Second * time.Duration(math.Pow(2, exp+1))
+	blm.Cache.SetWithExpire(key, exp, newExpirationTime)
+	log.Printf("next request from source %s will be blocked for %d seconds", key, newExpirationTime/2e9)
 }
 
 func (blm *BlackListManager) isIntervalSufficient(key string) bool {
+	var isSufficient = true
 	lastAccessTime, present := blm.LastAccess[key]
+	interval := time.Now().Sub(lastAccessTime).Seconds()
 	if present {
-		return time.Now().Sub(lastAccessTime).Seconds() < blm.MinimalRequestInterval.Seconds()
+		isSufficient = interval >= blm.MinimalRequestInterval.Seconds()
+		if !isSufficient {
+			log.Printf("INSUFFICIENT INTERVAL: %f\n", interval)
+		}
 	}
-	return true
+
+	return isSufficient
 }
 
 func (blm *BlackListManager) ShouldRequestBeBlocked(key string) bool {
 	val, _ := blm.Cache.Get(key)
-	return !blm.isIntervalSufficient(key) && val.(int) > 0
+
+	return !blm.isIntervalSufficient(key) || convertCacheValueToFloat64(val) > 0
 }
 
-func (blm *BlackListManager) BlockRequestFromSource(key string) {
+func (blm *BlackListManager) PurgeCache() {
+	blm.Cache.Purge()
+}
+
+func (blm *BlackListManager) BlockProcessingTraffic(key string) {
 	cacheValue, _ := blm.Cache.Get(key)
-	intValue := convertCacheValueToInt(cacheValue)
-	if intValue > 0 {
-		timeOfSleeping := math.Pow(2, float64(intValue))
-		time.Sleep(time.Duration(timeOfSleeping) * time.Second)
-	}
+	floatValue := convertCacheValueToFloat64(cacheValue)
+	time.Sleep(getSufficientSleepTime(floatValue))
 }
 
-func convertCacheValueToInt(value interface{}) int {
-	intValue, ok := value.(int)
+func getSufficientSleepTime(exp float64) time.Duration {
+	finalExp := math.Max(exp, 4)
+	return time.Duration(math.Pow(2, finalExp)) * time.Second
+}
+
+func convertCacheValueToFloat64(value interface{}) float64 {
+	convertedValue, ok := value.(float64)
 	if ok {
-		return intValue
+		return convertedValue
 	}
 
 	return 0
